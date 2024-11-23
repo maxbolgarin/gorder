@@ -14,29 +14,39 @@ import (
 )
 
 const (
-	DefaultFlushInterval   = 100 * time.Millisecond
+	// DefaultFlushInterval is the maximum interval to sleep between sending tasks to workers if another value is not set.
+	DefaultFlushInterval = 100 * time.Millisecond
+	// DefaultUnusedThreshold is the threshold for deleting unused queues to save memory if another value is not set.
 	DefaultUnusedThreshold = 5 * time.Minute
-	MinTimeout             = 100 * time.Millisecond
-	MaxTimeout             = 10 * time.Second
+	// DefaultRetries is the maximum number of retries for failed tasks if another value is not set.
+	DefaultRetries = math.MaxInt
+	// DefaultRetryBackoffMinTimeout is the minimum timeout between retries if another value is not set.
+	DefaultRetryBackoffMinTimeout = 100 * time.Millisecond
+	// DefaultRetryBackoffMaxTimeout is the maximum timeout between retries if another value is not set.
+	DefaultRetryBackoffMaxTimeout = 10 * time.Second
 )
 
 // Options contains options for Gorder
 type Options struct {
-	// Workers is the number of workers to handle tasks functions
+	// Workers is the number of workers to handle tasks functions, defaults to runtime.NumCPU
 	Workers int
-
-	// FlushInterval is the interval to flush tasks to workers
-	FlushInterval   time.Duration
+	// FlushInterval is the maximum interval to sleep between sending tasks to workers
+	FlushInterval time.Duration
+	// UnusedThreshold is the threshold for deleting unused queues to save memory
 	UnusedThreshold time.Duration
-
-	Retries                int
+	// Retries is the maximum number of retries for failed tasks
+	Retries int
+	// RetryBackoffMinTimeout is the minimum timeout between retries
 	RetryBackoffMinTimeout time.Duration
+	// RetryBackoffMaxTimeout is the maximum timeout between retries
 	RetryBackoffMaxTimeout time.Duration
-	ThrowOnShutdown        bool
+	// ThrowOnShutdown is a flag to throw broken tasks on shutdown
+	ThrowOnShutdown bool
 
 	Log Logger
 }
 
+// Logger is an interface for logging. You can use slog.Default(). It should be structural logger.
 type Logger interface {
 	Debug(string, ...any)
 	Info(string, ...any)
@@ -44,6 +54,7 @@ type Logger interface {
 	Error(string, ...any)
 }
 
+// Gorder is a task queue with strict ordering
 type Gorder[T comparable] struct {
 	q   *Queue[T]
 	log Logger
@@ -60,12 +71,14 @@ type Gorder[T comparable] struct {
 	mu           sync.Mutex
 }
 
+// New creates a new Gorder with default options.
 func New[T comparable](ctx context.Context, workers int, lg Logger) *Gorder[T] {
 	return NewWithOptions[T](ctx, Options{Workers: workers, Log: lg})
 }
 
+// NewWithOptions creates a new Gorder with custom options.
 func NewWithOptions[T comparable](ctx context.Context, opts Options) *Gorder[T] {
-	opts = opts.WithDefault()
+	opts = opts.withDefault()
 
 	if opts.Log == nil {
 		opts.Log = noopLogger{}
@@ -90,6 +103,7 @@ func NewWithOptions[T comparable](ctx context.Context, opts Options) *Gorder[T] 
 	return q
 }
 
+// Shutdown gracefully shutdowns the queue. It just waits for all tasks to be processed without sleeping.
 func (q *Gorder[T]) Shutdown(ctx context.Context) error {
 	q.isShutdown.Store(true)
 
@@ -113,6 +127,8 @@ func (q *Gorder[T]) Shutdown(ctx context.Context) error {
 	}
 }
 
+// Push adds task to the end of the queue. It will process tasks sequentially for the same queue key
+// and parallel for different queue keys. Don't use it after shutdown.
 func (q *Gorder[T]) Push(queueKey T, name string, f TaskFunc) {
 	q.counter.Add(1)
 	name = name + ":" + strconv.Itoa(int(q.counter.Load()))
@@ -120,10 +136,12 @@ func (q *Gorder[T]) Push(queueKey T, name string, f TaskFunc) {
 	q.q.Push(queueKey, NewTask(name, f))
 }
 
+// Stat returns statistics for each queue.
 func (q *Gorder[T]) Stat() map[T]QueueStat {
 	return q.q.Stat()
 }
 
+// BrokenQueues returns current number of retries for all broken queues.
 func (q *Gorder[T]) BrokenQueues() map[T]int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -294,7 +312,7 @@ func runGoroutine(l Logger, f func()) {
 	go foo()
 }
 
-func (opt Options) WithDefault() Options {
+func (opt Options) withDefault() Options {
 	if opt.Workers <= 0 {
 		opt.Workers = runtime.NumCPU()
 	}
@@ -305,13 +323,13 @@ func (opt Options) WithDefault() Options {
 		opt.UnusedThreshold = DefaultUnusedThreshold
 	}
 	if opt.Retries <= 0 {
-		opt.Retries = math.MaxInt
+		opt.Retries = DefaultRetries
 	}
 	if opt.RetryBackoffMinTimeout <= 0 {
-		opt.RetryBackoffMinTimeout = MinTimeout
+		opt.RetryBackoffMinTimeout = DefaultRetryBackoffMinTimeout
 	}
 	if opt.RetryBackoffMaxTimeout <= 0 {
-		opt.RetryBackoffMaxTimeout = MaxTimeout
+		opt.RetryBackoffMaxTimeout = DefaultRetryBackoffMaxTimeout
 	}
 	return opt
 }
