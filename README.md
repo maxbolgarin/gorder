@@ -2,6 +2,12 @@
 
 [![Go Version][version-img]][doc] [![GoDoc][doc-img]][doc] [![Build][ci-img]][ci] [![GoReport][report-img]][report]
 
+
+<picture>
+  <img src=".github/logo.jpg" width="500" alt="gorder logo">
+</picture>
+
+
 **gorder** is a zero-dependency in-memory task queue with strict ordering. It can be used for scheduling tasks in a particular order, eg. for async database operations with a strict order of execution.
 
 ## Installation
