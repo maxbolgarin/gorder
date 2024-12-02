@@ -121,7 +121,7 @@ func (q *Queue[T]) Push(queueKey T, task Task) {
 		tasks = NewLinkedList[Task]()
 		q.queues[queueKey] = tasks
 	}
-	tasks.InsertBack(task)
+	tasks.PushBack(task)
 
 	q.lastUpdate[queueKey] = time.Now()
 }

@@ -55,8 +55,8 @@ func (l *LinkedList[T]) Len() int {
 	return l.len
 }
 
-// InsertFront adds an element to the front of the linked list.
-func (l *LinkedList[T]) InsertFront(data T) {
+// PushFront adds an element to the front of the linked list.
+func (l *LinkedList[T]) PushFront(data T) {
 	l.insert(data, func(l *LinkedList[T], newNode *node[T]) {
 		if l.head != nil {
 			l.head.next = newNode
@@ -66,8 +66,8 @@ func (l *LinkedList[T]) InsertFront(data T) {
 	})
 }
 
-// InsertBack adds an element to the back of the linked list.
-func (l *LinkedList[T]) InsertBack(data T) {
+// PushBack adds an element to the back of the linked list.
+func (l *LinkedList[T]) PushBack(data T) {
 	l.insert(data, func(l *LinkedList[T], newNode *node[T]) {
 		if l.tail != nil {
 			l.tail.prev = newNode
