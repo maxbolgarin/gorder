@@ -42,8 +42,10 @@ func NewTask(name string, f TaskFunc) Task {
 // Queue provides in memory task queue with requirements
 //  1. Strict task ordering;
 //  2. Guarantees that tasks won't get lost with Ack mechanics.
+//
+// It is safe for concurrent use.
 type Queue[T comparable] struct {
-	queues     map[T]*LinkedList[Task]
+	queues     map[T]*linkedList[Task]
 	waitForAck map[T]struct{}
 	lastUpdate map[T]time.Time
 
@@ -53,7 +55,7 @@ type Queue[T comparable] struct {
 // NewQueue creates a new queue.
 func NewQueue[T comparable]() *Queue[T] {
 	return &Queue[T]{
-		queues:     make(map[T]*LinkedList[Task]),
+		queues:     make(map[T]*linkedList[Task]),
 		waitForAck: make(map[T]struct{}),
 		lastUpdate: make(map[T]time.Time),
 	}
@@ -75,7 +77,7 @@ func (q *Queue[T]) Next(queueKey T) (Task, error) {
 		return Task{}, ErrQueueNotFound
 	}
 
-	task, ok := tasks.Front()
+	task, ok := tasks.front()
 	if !ok {
 		return Task{}, ErrQueueIsEmpty
 	}
@@ -99,7 +101,7 @@ func (q *Queue[T]) Ack(queueKey T) error {
 		return ErrQueueNotFound
 	}
 
-	_, ok = tasks.PopFront()
+	_, ok = tasks.popFront()
 	if !ok {
 		return ErrQueueIsEmpty
 	}
@@ -118,10 +120,10 @@ func (q *Queue[T]) Push(queueKey T, task Task) {
 
 	tasks, ok := q.queues[queueKey]
 	if !ok {
-		tasks = NewLinkedList[Task]()
+		tasks = newLinkedList[Task]()
 		q.queues[queueKey] = tasks
 	}
-	tasks.PushBack(task)
+	tasks.pushBack(task)
 
 	q.lastUpdate[queueKey] = time.Now()
 }
@@ -145,7 +147,7 @@ func (q *Queue[T]) WaitingQueues() []T {
 
 	out := make([]T, 0, len(q.queues))
 	for key, queue := range q.queues {
-		if queue.Len() == 0 {
+		if queue.length() == 0 {
 			continue // queue is empty
 		}
 		if _, ok := q.waitForAck[key]; ok {
@@ -166,7 +168,7 @@ func (q *Queue[T]) Stat() map[T]QueueStat {
 	for k, v := range q.queues {
 		_, ok := q.waitForAck[k]
 		out[k] = QueueStat{
-			Length:       v.Len(),
+			Length:       v.length(),
 			lastUpdate:   q.lastUpdate[k],
 			IsWaitForAck: ok,
 		}
@@ -191,7 +193,7 @@ func (q *Queue[T]) DeleteUnusedQueues(activeThreshold time.Duration) (deleted []
 			continue
 		}
 
-		if list.Len() != 0 {
+		if list.length() != 0 {
 			struggling = append(struggling, k)
 			continue
 		}
@@ -203,4 +205,105 @@ func (q *Queue[T]) DeleteUnusedQueues(activeThreshold time.Duration) (deleted []
 	}
 
 	return deleted, struggling
+}
+
+// linkedList is an implementation of a thread-safe generic doubly linked list.
+type linkedList[T any] struct {
+	head *node[T]
+	tail *node[T]
+	len  int
+	mu   sync.Mutex
+}
+
+type node[T any] struct {
+	prev *node[T]
+	next *node[T]
+	data T
+}
+
+// newLinkedList creates a new linked list.
+func newLinkedList[T any]() *linkedList[T] {
+	return &linkedList[T]{}
+}
+
+// front returns the first element of the linked list.
+func (l *linkedList[T]) front() (T, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.head == nil {
+		var zero T
+		return zero, false
+	}
+	return l.head.data, true
+}
+
+// length returns the number of elements in the linked list.
+func (l *linkedList[T]) length() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.len
+}
+
+// pushBack adds an element to the back of the linked list.
+func (l *linkedList[T]) pushBack(data T) {
+	l.insert(data, func(l *linkedList[T], newNode *node[T]) {
+		if l.tail != nil {
+			l.tail.prev = newNode
+			newNode.next = l.tail
+			l.tail = newNode
+		}
+	})
+}
+
+// popFront removes an element from the front of the linked list and returns it.
+func (l *linkedList[T]) popFront() (T, bool) {
+	return l.pop(l.head, func(l *linkedList[T]) {
+		l.head = l.head.prev
+		if l.head != nil {
+			l.head.next = nil
+		}
+	})
+}
+
+func (l *linkedList[T]) insert(data T, inserter func(l *linkedList[T], newNode *node[T])) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	defer func() {
+		l.len += 1
+	}()
+
+	newNode := &node[T]{
+		data: data,
+	}
+
+	if l.len == 0 {
+		l.head = newNode
+		l.tail = newNode
+		return
+	}
+
+	inserter(l, newNode)
+}
+
+func (l *linkedList[T]) pop(node *node[T], popper func(l *linkedList[T])) (T, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if node == nil {
+		var zero T
+		return zero, false
+	}
+	out := node.data
+
+	l.len -= 1
+	if l.len == 0 {
+		l.head = nil
+		l.tail = nil
+		return out, true
+	}
+
+	popper(l)
+	return out, true
 }

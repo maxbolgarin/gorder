@@ -13,37 +13,49 @@ import (
 	"time"
 )
 
-const (
-	DefaultFlushInterval   = 100 * time.Millisecond
-	DefaultUnusedThreshold = 5 * time.Minute
-	MinTimeout             = 100 * time.Millisecond
-	MaxTimeout             = 10 * time.Second
-)
-
-// Options contains options for Gorder
+// Options contains options for Gorder. Every field is optional.
 type Options struct {
-	// Workers is the number of workers to handle tasks functions
+	// Workers is the number of workers to handle tasks functions.
+	// The default value is the number of CPUs.
 	Workers int
 
-	// FlushInterval is the interval to flush tasks to workers
-	FlushInterval   time.Duration
+	// FlushInterval is the max time of sleeping between flushing tasks to workers.
+	// The default value is 100ms.
+	FlushInterval time.Duration
+
+	// UnusedThreshold is the max time between pushing tasks to queue before it gets deleted.
+	// The default value is 5 minutes.
 	UnusedThreshold time.Duration
 
-	Retries                int
+	// Retries is the max number of retries for failed task before throwing it.
+	// Use -1 to make retries unlimited.
+	// The default value is 10.
+	Retries int
+
+	// RetryBackoffMinTimeout is the min timeout between retries.
+	// The default value is 100ms.
 	RetryBackoffMinTimeout time.Duration
+
+	// RetryBackoffMaxTimeout is the max timeout between retries.
+	// The default value is 10s.
 	RetryBackoffMaxTimeout time.Duration
-	ThrowOnShutdown        bool
 
-	Log Logger
+	// NoRetries is a flag that indicates that we should not retry failed tasks.
+	// The default value is false.
+	NoRetries bool
+
+	// DoNotThrowOnShutdown is a flag that indicates that we should wait for all tasks to complete before shutting down.
+	// The default value is false.
+	DoNotThrowOnShutdown bool
+
+	// Logger is used to log messages in case of errors.
+	// The default value is nil, so there is no logging.
+	Logger Logger
 }
 
-type Logger interface {
-	Debug(string, ...any)
-	Info(string, ...any)
-	Warn(string, ...any)
-	Error(string, ...any)
-}
-
+// Gorder is a in-memory task worker with strict ordering.
+// It handles tasks in parallel using worker pool.
+// It is safe for concurrent use.
 type Gorder[T comparable] struct {
 	q   *Queue[T]
 	log Logger
@@ -60,20 +72,21 @@ type Gorder[T comparable] struct {
 	mu           sync.Mutex
 }
 
-func New[T comparable](ctx context.Context, workers int, lg Logger) *Gorder[T] {
-	return NewWithOptions[T](ctx, Options{Workers: workers, Log: lg})
-}
+// New creates a new Gorder. It starts workers and flusher goroutines.
+func New[T comparable](ctx context.Context, rawOpts ...Options) *Gorder[T] {
+	var opts Options
+	if len(rawOpts) > 0 {
+		opts = rawOpts[0]
+	}
+	opts = opts.withDefault()
 
-func NewWithOptions[T comparable](ctx context.Context, opts Options) *Gorder[T] {
-	opts = opts.WithDefault()
-
-	if opts.Log == nil {
-		opts.Log = noopLogger{}
+	if opts.Logger == nil {
+		opts.Logger = noopLogger{}
 	}
 
 	q := &Gorder[T]{
 		q:            NewQueue[T](),
-		log:          opts.Log,
+		log:          opts.Logger,
 		workerChan:   make(chan taskWithKey[T], opts.Workers),
 		stopChan:     make(chan struct{}),
 		opts:         opts,
@@ -81,15 +94,17 @@ func NewWithOptions[T comparable](ctx context.Context, opts Options) *Gorder[T] 
 	}
 
 	for i := 0; i < opts.Workers; i++ {
-		runGoroutine(opts.Log, func() { q.worker(ctx) })
+		runGoroutine(opts.Logger, func() { q.worker(ctx) })
 	}
 
-	runGoroutine(opts.Log, q.flusher)
-	runGoroutine(opts.Log, q.deleteUnusedQueues)
+	runGoroutine(opts.Logger, q.flusher)
+	runGoroutine(opts.Logger, q.deleteUnusedQueues)
 
 	return q
 }
 
+// Shutdown stops the Gorder and waits for all tasks to complete.
+// By default it throws broken tasks without retries. To change this behavior, use DoNotThrowOnShutdown option.
 func (q *Gorder[T]) Shutdown(ctx context.Context) error {
 	q.isShutdown.Store(true)
 
@@ -113,6 +128,10 @@ func (q *Gorder[T]) Shutdown(ctx context.Context) error {
 	}
 }
 
+// Push adds task to the end of queue. It is non blocking and safe for concurrent use.
+// Tasks with different queue keys are executed in parallel, not sequentially.
+// Tasks with the same queue key are executed in order.
+// Don't use it after Shutdown.
 func (q *Gorder[T]) Push(queueKey T, name string, f TaskFunc) {
 	q.counter.Add(1)
 	name = name + ":" + strconv.Itoa(int(q.counter.Load()))
@@ -120,10 +139,12 @@ func (q *Gorder[T]) Push(queueKey T, name string, f TaskFunc) {
 	q.q.Push(queueKey, NewTask(name, f))
 }
 
+// Stat returns number of tasks for each queue and some additional info.
 func (q *Gorder[T]) Stat() map[T]QueueStat {
 	return q.q.Stat()
 }
 
+// BrokenQueues returns number of retries for each broken queue.
 func (q *Gorder[T]) BrokenQueues() map[T]int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -150,6 +171,10 @@ func (q *Gorder[T]) worker(ctx context.Context) {
 				}
 				break
 			}
+			if q.opts.NoRetries {
+				q.log.Error("failed task, throw it", "error", err, "queue", task.QueueKey, "name", task.Name)
+				break
+			}
 			q.log.Error("failed task", "error", err, "queue", task.QueueKey, "name", task.Name, "retry", retry)
 
 			retry++
@@ -158,7 +183,7 @@ func (q *Gorder[T]) worker(ctx context.Context) {
 				break
 			}
 
-			if q.opts.ThrowOnShutdown && q.isShutdown.Load() {
+			if !q.opts.DoNotThrowOnShutdown && q.isShutdown.Load() {
 				q.log.Error("throw task on shutdown", "queue", task.QueueKey, "name", task.Name, "retry", retry)
 				break
 			}
@@ -294,26 +319,45 @@ func runGoroutine(l Logger, f func()) {
 	go foo()
 }
 
-func (opt Options) WithDefault() Options {
+func (opt Options) withDefault() Options {
 	if opt.Workers <= 0 {
 		opt.Workers = runtime.NumCPU()
 	}
 	if opt.FlushInterval <= 0 {
-		opt.FlushInterval = DefaultFlushInterval
+		opt.FlushInterval = defaultFlushInterval
 	}
 	if opt.UnusedThreshold <= 0 {
-		opt.UnusedThreshold = DefaultUnusedThreshold
+		opt.UnusedThreshold = defaultUnusedThreshold
 	}
-	if opt.Retries <= 0 {
-		opt.Retries = math.MaxInt
+	if opt.Retries == 0 {
+		opt.Retries = maxRetries
+	}
+	if opt.Retries < 0 {
+		opt.Retries = math.MaxInt32
 	}
 	if opt.RetryBackoffMinTimeout <= 0 {
-		opt.RetryBackoffMinTimeout = MinTimeout
+		opt.RetryBackoffMinTimeout = minTimeout
 	}
 	if opt.RetryBackoffMaxTimeout <= 0 {
-		opt.RetryBackoffMaxTimeout = MaxTimeout
+		opt.RetryBackoffMaxTimeout = maxTimeout
 	}
 	return opt
+}
+
+const (
+	defaultFlushInterval   = 100 * time.Millisecond
+	defaultUnusedThreshold = 5 * time.Minute
+	maxRetries             = 10
+	minTimeout             = 100 * time.Millisecond
+	maxTimeout             = 10 * time.Second
+)
+
+// Logger is an interface for logging. You can use slog.
+type Logger interface {
+	Debug(string, ...any)
+	Info(string, ...any)
+	Warn(string, ...any)
+	Error(string, ...any)
 }
 
 type noopLogger struct{}

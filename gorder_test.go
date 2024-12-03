@@ -14,7 +14,7 @@ import (
 
 func TestGorder(t *testing.T) {
 	t.Run("SingleQueue", func(t *testing.T) {
-		q := gorder.New[string](context.Background(), 0, nil)
+		q := gorder.New[string](context.Background())
 
 		var out []string
 		var mu sync.Mutex
@@ -61,7 +61,7 @@ func TestGorder(t *testing.T) {
 	})
 
 	t.Run("ManyQueus", func(t *testing.T) {
-		q := gorder.NewWithOptions[string](context.Background(), gorder.Options{UnusedThreshold: time.Millisecond})
+		q := gorder.New[string](context.Background(), gorder.Options{UnusedThreshold: time.Millisecond})
 
 		var out []string
 		var mu sync.Mutex
@@ -159,7 +159,7 @@ func TestGorder(t *testing.T) {
 	})
 
 	t.Run("SingleQueueError", func(t *testing.T) {
-		q := gorder.NewWithOptions[string](context.Background(), gorder.Options{
+		q := gorder.New[string](context.Background(), gorder.Options{
 			RetryBackoffMinTimeout: time.Millisecond,
 			RetryBackoffMaxTimeout: 10 * time.Millisecond,
 			Retries:                5,
@@ -213,10 +213,9 @@ func TestGorder(t *testing.T) {
 	})
 
 	t.Run("SingleQueueErrorThrowShutdown", func(t *testing.T) {
-		q := gorder.NewWithOptions[string](context.Background(), gorder.Options{
+		q := gorder.New[string](context.Background(), gorder.Options{
 			RetryBackoffMinTimeout: time.Millisecond,
 			RetryBackoffMaxTimeout: 10 * time.Millisecond,
-			ThrowOnShutdown:        true,
 			FlushInterval:          time.Millisecond,
 		})
 
